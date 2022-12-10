@@ -1,4 +1,3 @@
-{ config, lib, pks, ...}:
 with import <nixpkgs> {};
 llvmPackages_14.stdenv.mkDerivation {
   name = "clang-nix-shell";
