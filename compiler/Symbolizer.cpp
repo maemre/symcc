@@ -764,30 +764,68 @@ void Symbolizer::visitPHINode(PHINode &I) {
 
 void Symbolizer::visitInsertValueInst(InsertValueInst &I) {
   IRBuilder<> IRB(&I);
-  auto insert = buildRuntimeCall(
-      IRB, runtime.buildInsert,
-      {{I.getAggregateOperand(), true},
-       {I.getInsertedValueOperand(), true},
-       {IRB.getInt64(aggregateMemberOffset(I.getAggregateOperand()->getType(),
-                                           I.getIndices())),
-        false},
-       {IRB.getInt8(isLittleEndian(I.getInsertedValueOperand()->getType()) ? 1
-                                                                           : 0),
-        false}});
-  registerSymbolicComputation(insert, &I);
+  auto target = I.getAggregateOperand();
+  auto insertedValue = I.getInsertedValueOperand();
+  auto insertedValueType = insertedValue->getType();
+
+  if (getSymbolicExpression(target) == nullptr &&
+      getSymbolicExpression(insertedValue) == nullptr)
+    return;
+
+  auto insertedValueExpr = getSymbolicExpressionOrNull(insertedValue);
+
+  // Floating-point values are a distinct kind in the solver, so we need to
+  // convert them to bit vectors before we can insert them into the expression
+  // for the aggregate.
+  Input symbolicInput;
+  if (insertedValueType->isFloatingPointTy()) {
+    auto floatConversion = IRB.CreateCall(
+        runtime.buildFloatToBits,
+        {insertedValueExpr, IRB.getInt1(insertedValueType->isDoubleTy())});
+    symbolicInput = {insertedValue, 0, floatConversion};
+    insertedValueExpr = floatConversion;
+  }
+
+  auto result = IRB.CreateCall(
+      runtime.buildInsert,
+      {getSymbolicExpressionOrNull(target), insertedValueExpr,
+       IRB.getInt64(aggregateMemberOffset(target->getType(), I.getIndices())),
+       IRB.getInt8(isLittleEndian(insertedValueType) ? 1 : 0)});
+
+  if (!insertedValueType->isFloatingPointTy())
+    symbolicInput = {insertedValue, 1, result};
+
+  registerSymbolicComputation(
+      {symbolicInput.user, result, {{target, 0, result}, symbolicInput}}, &I);
 }
 
 void Symbolizer::visitExtractValueInst(ExtractValueInst &I) {
   IRBuilder<> IRB(&I);
-  auto extract = buildRuntimeCall(
-      IRB, runtime.buildExtract,
-      {{I.getAggregateOperand(), true},
-       {IRB.getInt64(aggregateMemberOffset(I.getAggregateOperand()->getType(),
-                                           I.getIndices())),
-        false},
-       {IRB.getInt64(dataLayout.getTypeStoreSize(I.getType())), false},
-       {IRB.getInt8(isLittleEndian(I.getType()) ? 1 : 0), false}});
-  registerSymbolicComputation(extract, &I);
+  auto target = I.getAggregateOperand();
+  auto targetExpr = getSymbolicExpression(target);
+  auto resultType = I.getType();
+
+  if (targetExpr == nullptr)
+    return;
+
+  auto extractedBits = IRB.CreateCall(
+      runtime.buildExtract,
+      {targetExpr,
+       IRB.getInt64(aggregateMemberOffset(target->getType(), I.getIndices())),
+       IRB.getInt64(dataLayout.getTypeStoreSize(resultType)),
+       IRB.getInt8(isLittleEndian(resultType) ? 1 : 0)});
+
+  // Floating-point values are a distinct kind in the solver. Extracting from an
+  // aggregate gives us a bit vector, so we need to convert the expression to a
+  // float if it represents one.
+  auto result = resultType->isFloatingPointTy()
+                    ? IRB.CreateCall(runtime.buildBitsToFloat,
+                                     {extractedBits,
+                                      IRB.getInt1(resultType->isDoubleTy())})
+                    : extractedBits;
+
+  registerSymbolicComputation(
+      {extractedBits, result, {{target, 0, extractedBits}}}, &I);
 }
 
 void Symbolizer::visitSwitchInst(SwitchInst &I) {
@@ -887,15 +925,26 @@ CallInst *Symbolizer::createValueExpression(Value *V, IRBuilder<> &IRB) {
     // member. However, this would put an additional burden on the handling of
     // cast instructions, because expressions would have to be converted
     // between different representations according to the type.
+    //
+    // Unfortunately, the hack doesn't work when the entire structure is
+    // "undef"; writing it to memory is a well-defined bitcode operation, but
+    // the symbolic expression for the memory region will just be null because
+    // it's entirely concrete. We create an all-zeros expression for it instead.
 
-    auto *memory = IRB.CreateAlloca(V->getType());
-    IRB.CreateStore(V, memory);
-    return IRB.CreateCall(
-        runtime.readMemory,
-        {IRB.CreatePtrToInt(memory, intPtrType),
-         ConstantInt::get(intPtrType,
-                          dataLayout.getTypeStoreSize(V->getType())),
-         IRB.getInt8(0)});
+    if (isa<UndefValue>(V)) {
+      return IRB.CreateCall(
+          runtime.buildZeroBytes,
+          {ConstantInt::get(intPtrType,
+                            dataLayout.getTypeStoreSize(valueType))});
+    } else {
+      auto *memory = IRB.CreateAlloca(valueType);
+      IRB.CreateStore(V, memory);
+      return IRB.CreateCall(
+          runtime.readMemory,
+          {IRB.CreatePtrToInt(memory, intPtrType),
+           ConstantInt::get(intPtrType, dataLayout.getTypeStoreSize(valueType)),
+           IRB.getInt8(0)});
+    }
   }
 
   llvm_unreachable("Unhandled type for constant expression");
