@@ -81,11 +81,30 @@ void handle_z3_error(Z3_context c [[maybe_unused]], Z3_error_code e) {
 }
 #endif
 
+/// Log Z3 ASTs, this includes any Z3 assertion.
+void logAST(Z3_ast ast) {
+  fprintf(g_log, "%s\n", Z3_ast_to_string(g_context, ast));
+  fflush(g_log);
+}
+
+/// Log declare-const
+void logConstDecl(Z3_ast constant, Z3_sort sort) {
+  // We print everything separately because Z3 re-uses the same string buffer.
+  fputs("(declare-const ", g_log);
+  fputs(Z3_ast_to_string(g_context, constant), g_log);
+  fputc(' ', g_log);
+  fputs(Z3_sort_to_string(g_context, sort), g_log);
+  fputs(")\n", g_log);
+  fflush(g_log);
+}
+
 Z3_ast build_variable(const char *name, uint8_t bits) {
   Z3_symbol sym = Z3_mk_string_symbol(g_context, name);
   auto *sort = Z3_mk_bv_sort(g_context, bits);
   Z3_inc_ref(g_context, (Z3_ast)sort);
   Z3_ast result = Z3_mk_const(g_context, sym, sort);
+  // log the variable
+  logConstDecl(result, sort);
   Z3_inc_ref(g_context, result);
   Z3_dec_ref(g_context, (Z3_ast)sort);
   return result;
@@ -438,20 +457,15 @@ void _sym_push_path_constraint(Z3_ast constraint, int taken,
     return;
   }
 
-  /* Generate a solution for the alternative */
+  /* Generate the alternative constraint */
   Z3_ast not_constraint =
       Z3_simplify(g_context, Z3_mk_not(g_context, constraint));
   Z3_inc_ref(g_context, not_constraint);
 
-  /* Assert the actual path constraint */
   Z3_ast newConstraint = (taken ? constraint : not_constraint);
   Z3_inc_ref(g_context, newConstraint);
-  Z3_solver_assert(g_context, g_solver, newConstraint);
-  assert((Z3_solver_check(g_context, g_solver) == Z3_L_TRUE) &&
-         "Asserting infeasible path constraint");
   /* Log the constraint */
-  fprintf(g_log, "%s\n", Z3_solver_to_string(g_context, g_solver));
-  fflush(g_log);
+  logAST(newConstraint);
   Z3_dec_ref(g_context, constraint);
   Z3_dec_ref(g_context, not_constraint);
 }
