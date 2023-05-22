@@ -1,3 +1,5 @@
+INPUT: /6^B^@/U
+
 (declare-const stdin0 (_ BitVec 8))
 (declare-const stdin1 (_ BitVec 8))
 (declare-const stdin2 (_ BitVec 8))
