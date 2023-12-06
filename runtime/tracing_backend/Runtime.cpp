@@ -262,6 +262,10 @@ DEF_BINARY_EXPR_BUILDER(float_ordered_equal, fpa_eq)
 
 #undef DEF_BINARY_EXPR_BUILDER
 
+Z3_ast _sym_build_ite(Z3_ast cond, Z3_ast a, Z3_ast b) {
+  return registerExpression(Z3_mk_ite(g_context, cond, a, b));
+}
+
 Z3_ast _sym_build_fp_add(Z3_ast a, Z3_ast b) {
   return registerExpression(Z3_mk_fpa_add(g_context, g_rounding_mode, a, b));
 }
