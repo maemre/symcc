@@ -40,6 +40,8 @@ TAGS
 # Clang tooling
 compile_commands.json
 .clangd
+.cache
 
-# Build directory
-build/
+# Build directories
+build*
+
